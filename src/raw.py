@@ -394,7 +394,6 @@ def blueprint_raw():
         BlueprintPanel(expanded=False),
         SelectionPanel(expanded=False),
         TimePanel(expanded=False),
-        auto_space_views=False,
     )
     return blueprint
 
