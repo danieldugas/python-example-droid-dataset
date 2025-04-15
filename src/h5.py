@@ -14,7 +14,15 @@ import h5py
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import tensorflow_datasets as tfds  # noqa: E402
 
-H5_PATH = os.path.expanduser("~/robotics-world-models/data/evaluation_tasks/mpk/push/v2/run_0001/")
+# H5_PATH = os.path.expanduser("~/robotics-world-models/data/evaluation_tasks/mpk/push/v2/run_0001/")
+
+from huggingface_hub import hf_hub_download
+from huggingface_hub import login
+# login()
+# H5_PATH = hf_hub_download(repo_id="facebook/robotics-world-models", filename="data/evaluation_tasks/mpk/push/v2/run_0001/episode.h5")
+from huggingface_hub import snapshot_download
+# H5_PATH_PARENT = os.path.dirname(H5_PATH)
+H5_PATH_PARENT = snapshot_download(repo_id="facebook/robotics-world-models", allow_patterns="*.h5")
 
 class H5FolderDataset:
     """ Basic DROID dataset class, loads all episode.h5 files from a folder """
@@ -38,7 +46,7 @@ class H5FolderDataset:
 class H5RerunLogger:
     def __init__(self, data: Path | None = None):
         if data is None:
-            data = Path(H5_PATH)
+            data = Path(H5_PATH_PARENT)
         self.prev_joint_origins = None
         self.ds = H5FolderDataset(data)
 
@@ -129,19 +137,23 @@ class H5RerunLogger:
     ):
         cur_time_ns = 0
         for episode in self.ds:
-            for step in range(len(episode["episode_data"]["observation"]["cartesian_position"])):
-                rr.set_time_nanos("real_time", cur_time_ns)
-                cur_time_ns += int((1e9 * 1 / 30))
-    #             rr.log("instructions", rr.TextDocument(f'''
-    # **instruction 1**: {bytearray(step["language_instruction"]).decode()}
-    # **instruction 2**: {bytearray(step["language_instruction_2"]).decode()}
-    # **instruction 3**: {bytearray(step["language_instruction_3"]).decode()}
-    # ''',
-    #                 media_type="text/markdown"))
-                self.log_images(step, episode)
-                self.log_robot_states(step, episode, entity_to_transform)
-                # self.log_action_dict(step, episode)
-                # rr.log("discount", rr.Scalar(step["discount"]))
+            try:
+                print(f"Logging episode {episode.filename}")
+                for step in range(len(episode["episode_data"]["observation"]["cartesian_position"])):
+                    rr.set_time_nanos("real_time", cur_time_ns)
+                    cur_time_ns += int((1e9 * 1 / 30))
+        #             rr.log("instructions", rr.TextDocument(f'''
+        # **instruction 1**: {bytearray(step["language_instruction"]).decode()}
+        # **instruction 2**: {bytearray(step["language_instruction_2"]).decode()}
+        # **instruction 3**: {bytearray(step["language_instruction_3"]).decode()}
+        # ''',
+        #                 media_type="text/markdown"))
+                    self.log_images(step, episode)
+                    self.log_robot_states(step, episode, entity_to_transform)
+                    # self.log_action_dict(step, episode)
+                    # rr.log("discount", rr.Scalar(step["discount"]))
+            except Exception as e:
+                print(f"WARNING: skipping episode. Reason: ", e)
 
     def blueprint(self):
         from rerun.blueprint import (
