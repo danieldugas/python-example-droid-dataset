@@ -14,27 +14,47 @@ import h5py
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import tensorflow_datasets as tfds  # noqa: E402
 
-H5_PATH = os.path.expanduser("~/robotics-world-models/data/evaluation_tasks/mpk/push/v2/run_0001/episode.h5")
+H5_PATH = os.path.expanduser("~/robotics-world-models/data/evaluation_tasks/mpk/push/v2/run_0001/")
 
-class H5Dataset:
+class H5FolderDataset:
+    """ Basic DROID dataset class, loads all episode.h5 files from a folder """
+    def __init__(self, folder: Path | None = None):
+        # find all episode.h5 files recursively in folder
+        self.h5_filepaths = []
+        for root, dirs, files in os.walk(folder):
+            for file in files:
+                if file.endswith("episode.h5"):
+                    self.h5_filepaths.append(os.path.join(root, file))
+        self.h5_filepaths.sort()
+        print(f"Found {len(self.h5_filepaths)} episode.h5 files")
+
+    def __len__(self):
+        return len(self.h5_filepaths)
+
+    def __getitem__(self, idx):
+        episode = h5py.File(self.h5_filepaths[idx], "r")
+        return episode
+
+class H5RerunLogger:
     def __init__(self, data: Path | None = None):
-        ds = h5py.File(H5_PATH, "r")
+        if data is None:
+            data = Path(H5_PATH)
         self.prev_joint_origins = None
-        self.ds = ds
+        self.ds = H5FolderDataset(data)
 
-    def log_images(self, step):
+    def log_images(self, step, episode):
         for cam in [
             "exterior_image_1_left",
             "exterior_image_2_left",
             "wrist_image_left",
         ]:
-            if cam not in self.ds["episode_data"]["observation"]:
+            if cam not in episode["episode_data"]["observation"]:
                 continue
-            rr.log(f"/cameras/{cam}", rr.Image(self.ds["episode_data"]["observation"][cam][step][:,:,::-1]))
+            rr.log(f"/cameras/{cam}", rr.Image(episode["episode_data"]["observation"][cam][step][:,:,::-1]))
 
-    def log_robot_states(self, step, entity_to_transform):
+    def log_robot_states(self, step, episode, entity_to_transform):
         
-        joint_angles = self.ds["episode_data"]["observation"]["joint_position"][step]
+        joint_angles = episode["episode_data"]["observation"]["joint_position"][step]
 
         # forward kinematics and log each joint pose
         joint_origins = []
@@ -52,31 +72,31 @@ class H5Dataset:
         self.prev_joint_origins = joint_origins
 
         # gripper, eef pose, joints
-        if "gripper_position" in self.ds["episode_data"]["observation"]:
+        if "gripper_position" in episode["episode_data"]["observation"]:
             rr.log(
                 "/robot_state/gripper_position",
-                rr.Scalar(self.ds["episode_data"]["observation"]["gripper_position"][step]),
+                rr.Scalar(episode["episode_data"]["observation"]["gripper_position"][step]),
             )
         rr.log(
             "/robot_state/cartesian_position/cord",
             rr.Transform3D(
-                translation=self.ds["episode_data"]["observation"]["cartesian_position"][step][:3],
-                mat3x3=Rotation.from_euler("xyz", self.ds["episode_data"]["observation"]["cartesian_position"][step][3:]).as_matrix(),
+                translation=episode["episode_data"]["observation"]["cartesian_position"][step][:3],
+                mat3x3=Rotation.from_euler("xyz", episode["episode_data"]["observation"]["cartesian_position"][step][3:]).as_matrix(),
             ),
         )
         rr.log(
             "/robot_state/cartesian_position/origin",
-            rr.Points3D([self.ds["episode_data"]["observation"]["cartesian_position"][step][:3]]),
+            rr.Points3D([episode["episode_data"]["observation"]["cartesian_position"][step][:3]]),
         )
-        for i, val in enumerate(self.ds["episode_data"]["observation"]["cartesian_position"][step]):
+        for i, val in enumerate(episode["episode_data"]["observation"]["cartesian_position"][step]):
             rr.log(f"/robot_state/cartesian_position/{i}", rr.Scalar(val))
-        for i, val in enumerate(self.ds["episode_data"]["observation"]["joint_position"][step]):
+        for i, val in enumerate(episode["episode_data"]["observation"]["joint_position"][step]):
             rr.log(f"/robot_state/joint_position/{i}", rr.Scalar(val))
 
 
 
-    def log_action_dict(self, step):
-        pose = self.ds["episode_data"]["action_dict"]["cartesian_position"][step]
+    def log_action_dict(self, step, episode):
+        pose = episode["episode_data"]["action_dict"]["cartesian_position"][step]
         translation = pose[:3]
         rotation_mat = Rotation.from_euler("xyz", pose[3:]).as_matrix()
         rr.log(
@@ -88,39 +108,40 @@ class H5Dataset:
             rr.Points3D([translation])
         )
 
-        for i, vel in enumerate(self.ds["episode_data"]["action_dict"]["cartesian_velocity"][step]):
+        for i, vel in enumerate(episode["episode_data"]["action_dict"]["cartesian_velocity"][step]):
             rr.log(f"/action_dict/cartesian_velocity/{i}", rr.Scalar(vel))
 
-        for i, vel in enumerate(self.ds["episode_data"]["action_dict"]["joint_velocity"][step]):
+        for i, vel in enumerate(episode["episode_data"]["action_dict"]["joint_velocity"][step]):
             rr.log(f"/action_dict/joint_velocity/{i}", rr.Scalar(vel))
 
         rr.log(
             "/action_dict/gripper_position",
-            rr.Scalar(self.ds["episode_data"]["action_dict"]["gripper_position"][step]),
+            rr.Scalar(episode["episode_data"]["action_dict"]["gripper_position"][step]),
         )
         rr.log(
             "/action_dict/gripper_velocity",
-            rr.Scalar(self.ds["episode_data"]["action_dict"]["gripper_velocity"][step]),
+            rr.Scalar(episode["episode_data"]["action_dict"]["gripper_velocity"][step]),
         )
-        rr.log("/reward", rr.Scalar(self.ds["episode_data"]["reward"][step]))
+        rr.log("/reward", rr.Scalar(episode["episode_data"]["reward"][step]))
 
     def log_robot_dataset(
         self, entity_to_transform: dict[str, tuple[np.ndarray, np.ndarray]]
     ):
         cur_time_ns = 0
-        for step in range(len(self.ds["episode_data"]["observation"]["cartesian_position"])):
-            rr.set_time_nanos("real_time", cur_time_ns)
-            cur_time_ns += int((1e9 * 1 / 30))
-#             rr.log("instructions", rr.TextDocument(f'''
-# **instruction 1**: {bytearray(step["language_instruction"]).decode()}
-# **instruction 2**: {bytearray(step["language_instruction_2"]).decode()}
-# **instruction 3**: {bytearray(step["language_instruction_3"]).decode()}
-# ''',
-#                 media_type="text/markdown"))
-            self.log_images(step)
-            self.log_robot_states(step, entity_to_transform)
-            # self.log_action_dict(step)
-            # rr.log("discount", rr.Scalar(step["discount"]))
+        for episode in self.ds:
+            for step in range(len(episode["episode_data"]["observation"]["cartesian_position"])):
+                rr.set_time_nanos("real_time", cur_time_ns)
+                cur_time_ns += int((1e9 * 1 / 30))
+    #             rr.log("instructions", rr.TextDocument(f'''
+    # **instruction 1**: {bytearray(step["language_instruction"]).decode()}
+    # **instruction 2**: {bytearray(step["language_instruction_2"]).decode()}
+    # **instruction 3**: {bytearray(step["language_instruction_3"]).decode()}
+    # ''',
+    #                 media_type="text/markdown"))
+                self.log_images(step, episode)
+                self.log_robot_states(step, episode, entity_to_transform)
+                # self.log_action_dict(step, episode)
+                # rr.log("discount", rr.Scalar(step["discount"]))
 
     def blueprint(self):
         from rerun.blueprint import (
@@ -221,7 +242,7 @@ def main() -> None:
     args = parser.parse_args()
 
     urdf_logger = URDFLogger(args.urdf)
-    rlds_scene = H5Dataset(args.data)
+    rlds_scene = H5RerunLogger(args.data)
     
     rr.init("DROID-visualized", spawn=True)
 
